@@ -149,6 +149,21 @@ dialog form{padding:20px;display:flex;flex-direction:column;gap:14px}
 .err{color:var(--bad);font-size:.875rem;min-height:1.2em}
 .preview{background:var(--bg);border-radius:10px;padding:10px 12px;font-size:.9rem}
 .actions{display:flex;gap:8px;justify-content:flex-start;flex-wrap:wrap}
+.print-head h2{font-size:1.2rem;margin-block-end:4px}
+.print-head p{margin:0}
+@media print{
+  .rail,.nav,.no-print,#toast,dialog,.banner{display:none!important}
+  .app,body{display:block!important;background:#fff!important}
+  main{padding:0!important;max-width:none!important;display:block!important}
+  *{box-shadow:none!important;color:#000!important;background:transparent!important;border-color:#999!important}
+  .print-head{margin-block-end:12px}
+  .scroll{overflow:visible!important}
+  table{min-width:0!important;font-size:10.5pt}
+  th,td{white-space:normal}
+  tr{break-inside:avoid}
+  .card,.tile{border:0!important;padding:0!important}
+  h3{break-after:avoid}
+}
 #toast{position:fixed;inset-inline:16px;inset-block-end:84px;margin-inline:auto;max-width:420px;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:.9rem;text-align:center;z-index:20;opacity:0;pointer-events:none;transition:opacity .2s}
 #toast.on{opacity:1}
 @media (prefers-reduced-motion:reduce){#toast{transition:none}}
@@ -283,7 +298,7 @@ const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
 const clone=o=>JSON.parse(JSON.stringify(o));
 
 const VIEWS=["home","dues","customers","reports","account"];
-const S={customers:new Map(),loans:new Map(),settings:new Map(),year:new Date().getFullYear(),view:"home",custId:null,filter:"late",q:"",ready:false,note:"",auth:"loading",email:"",uid:"",name:"",recover:false,authTab:"in"};
+const S={customers:new Map(),loans:new Map(),settings:new Map(),year:new Date().getFullYear(),view:"home",custId:null,filter:"late",q:"",ready:false,note:"",auth:"loading",email:"",uid:"",name:"",recover:false,authTab:"in",rtab:"annual",rf:{type:"summary",mode:"month",month:todayISO().slice(0,7),year:new Date().getFullYear(),from:"",to:"",customer:"",status:"all",ctype:"all"}};
 let sb=null,pending=null,busy=false,loadSeq=0;
 const cfg=window.AQSAT_CONFIG||{};
 
@@ -491,7 +506,7 @@ function viewCustomer(){
   });
   return h;
 }
-function viewReports(){
+function viewAnnual(){
   const ys=years();if(!ys.includes(S.year))S.year=ys[0];
   const y=S.year,r=report(y),cap=capital(),rate=zakatRate(),net=r.profit-r.loss,base=Math.max(0,cap+r.profitTo-r.lossTo),zakat=base*rate/100;
   const row=(k,v,c)=>'<div'+(c?' class="'+c+'"':'')+'><dt>'+k+'</dt><dd>'+v+'</dd></div>';
@@ -545,6 +560,158 @@ function viewAccount(){
     '<div class="card narrow stack"><h3>الخروج</h3><p class="sub">تسجيل الخروج من هذا الجهاز فقط. بياناتك تبقى محفوظة.</p>'+
       '<div class="actions"><button type="button" class="btn btn--quiet" data-act="signout">تسجيل الخروج</button></div></div>';
 }
+const RTYPES=[["summary","ملخص الفترة"],["payments","تفصيل المدفوعات"],["contracts","العقود"],["overdue","المتأخرات"],["written","الديون المعدومة"],["statement","كشف حساب عميل"]];
+const PERIODS=[["month","شهر محدد"],["year","سنة"],["range","من تاريخ إلى تاريخ"],["all","كل الفترات"]];
+const STATUSES=[["all","كل الحالات"],["active","قائم"],["closed","منتهٍ"],["written","دين معدوم"]];
+const CTYPES=[["all","كل الأنواع"],["inst","أقساط"],["grace","مهلة"]];
+const lab=(arr,v)=>{const x=arr.find(y=>y[0]===v);return x?x[1]:""};
+const kvRow=(k,v,c)=>'<div'+(c?' class="'+c+'"':'')+'><dt>'+k+'</dt><dd>'+v+'</dd></div>';
+const cname=id=>S.customers.get(id)?S.customers.get(id).name:"عميل محذوف";
+const ratioOf=l=>l.total>0?Math.max(0,l.total-l.principal)/l.total:0;
+const loanStatus=l=>l.writtenOff?"written":l.closed?"closed":"active";
+const inR=(d,r)=>!!d&&d>=r.from&&d<=r.to;
+function rangeOf(f){
+  if(f.mode==="month"&&f.month){
+    const [y,m]=f.month.split("-").map(Number),mm=String(m).padStart(2,"0");
+    return{from:y+"-"+mm+"-01",to:y+"-"+mm+"-"+String(new Date(y,m,0).getDate()).padStart(2,"0"),label:"شهر "+m+" / "+y};
+  }
+  if(f.mode==="year")return{from:f.year+"-01-01",to:f.year+"-12-31",label:"سنة "+f.year};
+  if(f.mode==="range"&&(f.from||f.to))return{from:f.from||"0001-01-01",to:f.to||"9999-12-31",label:"من "+(f.from?fmtDate(f.from):"البداية")+" إلى "+(f.to?fmtDate(f.to):"اليوم")};
+  return{from:"0001-01-01",to:"9999-12-31",label:"كل الفترات"};
+}
+function filteredLoans(f){
+  const out=[];
+  S.loans.forEach((l,id)=>{
+    if(f.customer&&l.customerId!==f.customer)return;
+    if(f.ctype!=="all"&&l.type!==f.ctype)return;
+    if(f.status!=="all"&&loanStatus(l)!==f.status)return;
+    out.push([id,l]);
+  });
+  return out.sort((a,b)=>String(a[1].createdAt).localeCompare(String(b[1].createdAt)));
+}
+function paidAsOf(it,d){return r2((it.pays||[]).filter(p=>p.date<=d).reduce((t,p)=>t+p.amount,0))}
+function remAsOf(l,d){return r2((l.installments||[]).reduce((t,it)=>t+Math.max(0,it.amt-paidAsOf(it,d)),0))}
+function payRows(list,r){
+  const rows=[];
+  list.forEach(([,l])=>(l.installments||[]).forEach(it=>(it.pays||[]).forEach(p=>{if(inR(p.date,r))rows.push({date:p.date,l,it,amount:p.amount})})));
+  return rows.sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+}
+function tbl(head,rows,foot){
+  const body=rows.length?rows.map(rw=>'<tr>'+rw.map(c=>'<td>'+c+'</td>').join("")+'</tr>').join(""):'<tr><td colspan="'+head.length+'">لا توجد سجلات في هذه الفترة.</td></tr>';
+  return '<div class="scroll"><table><thead><tr>'+head.map(h=>'<th>'+h+'</th>').join("")+'</tr></thead><tbody>'+body+'</tbody>'+
+    (foot&&rows.length?'<tfoot><tr>'+foot.map(c=>'<td><b>'+c+'</b></td>').join("")+'</tr></tfoot>':'')+'</table></div>';
+}
+function sumBody(list,r,end){
+  const newL=list.filter(([,l])=>inR(String(l.createdAt).slice(0,10),r));
+  const newPrin=newL.reduce((t,[,l])=>t+l.principal,0);
+  const pays=payRows(list,r);
+  const collected=pays.reduce((t,p)=>t+p.amount,0);
+  const profit=pays.reduce((t,p)=>t+p.amount*ratioOf(p.l),0);
+  const wl=list.filter(([,l])=>inR(l.writtenOff||"",r));
+  const loss=wl.reduce((t,[,l])=>t+loanSum(l).left*(1-ratioOf(l)),0);
+  const act=list.filter(([,l])=>loanStatus(l)==="active");
+  const outstanding=act.reduce((t,[,l])=>t+remAsOf(l,end),0);
+  let overdue=0,overdueN=0;
+  act.forEach(([,l])=>(l.installments||[]).forEach(it=>{
+    if(it.due<=end){const rem=Math.max(0,r2(it.amt-paidAsOf(it,end)));if(rem>0){overdue+=rem;overdueN++}}
+  }));
+  return '<dl class="kv">'+
+    kvRow("عقود جديدة في الفترة",newL.length)+
+    kvRow("المبالغ المسلَّمة للعملاء في الفترة",money(newPrin))+
+    kvRow("المحصَّل في الفترة",money(collected))+
+    kvRow("الأرباح المحققة في الفترة",money(profit))+
+    kvRow("الديون المعدومة في الفترة",wl.length+' عقد · '+money(loss))+
+    kvRow("المتبقي على العملاء حتى "+esc(fmtDate(end)),money(outstanding))+
+    kvRow("المتأخر حتى "+esc(fmtDate(end))+" ("+overdueN+" قسط)",money(overdue),"sum")+
+    '</dl><p class="note">الأرباح تُحتسب عند التحصيل بالطريقة نفسها في التقرير السنوي. الديون المعدومة تُحسب بما لم يُسترد من المبلغ المسلَّم.</p>';
+}
+function payBody(list,r){
+  const pays=payRows(list,r);
+  const rows=pays.map(p=>[esc(fmtDate(p.date)),esc(cname(p.l.customerId)),esc(p.l.note||"—"),esc(instLabel(p.l,p.it.n)),money(p.amount),money(p.amount*ratioOf(p.l))]);
+  const tot=pays.reduce((t,p)=>t+p.amount,0),prof=pays.reduce((t,p)=>t+p.amount*ratioOf(p.l),0);
+  return tbl(["التاريخ","العميل","العقد","القسط","المبلغ","الربح"],rows,["الإجمالي","","","",money(tot),money(prof)]);
+}
+function conBody(list){
+  const rows=list.map(([,l])=>{const m=loanSum(l);return[
+    esc(fmtDate(String(l.createdAt).slice(0,10))),esc(cname(l.customerId)),esc((l.note||"")+(l.note?" · ":"")+(l.type==="grace"?"مهلة "+l.months+" أشهر":"أقساط")),
+    money(l.principal),money(l.total),money(m.paid),money(m.left),esc(lab(STATUSES,loanStatus(l)))]});
+  const sum=k=>list.reduce((t,[,l])=>t+(k==="paid"?loanSum(l).paid:k==="left"?loanSum(l).left:l[k]),0);
+  return tbl(["التاريخ","العميل","العقد","المسلَّم","الإجمالي","المدفوع","المتبقي","الحالة"],rows,
+    ["الإجمالي","","",money(sum("principal")),money(sum("total")),money(sum("paid")),money(sum("left")),""]);
+}
+function overBody(list,end){
+  const rows=[];
+  list.forEach(([,l])=>{if(loanStatus(l)!=="active")return;
+    (l.installments||[]).forEach(it=>{
+      if(it.due>end)return;
+      const rem=Math.max(0,r2(it.amt-paidAsOf(it,end)));
+      if(rem>0)rows.push({due:it.due,cells:[esc(cname(l.customerId)),esc(l.note||"—"),esc(instLabel(l,it.n)),esc(fmtDate(it.due)),money(rem),esc(daysBetween(it.due,end)+" يوم")],rem});
+    });
+  });
+  rows.sort((a,b)=>a.due<b.due?-1:a.due>b.due?1:0);
+  return tbl(["العميل","العقد","القسط","الاستحقاق","المتبقي","التأخير"],rows.map(x=>x.cells),
+    ["الإجمالي","","","",money(rows.reduce((t,x)=>t+x.rem,0)),""]);
+}
+function writtenBody(list){
+  const rows=list.map(([,l])=>{const left=loanSum(l).left,loss=left*(1-ratioOf(l));return{cells:[esc(fmtDate(l.writtenOff)),esc(cname(l.customerId)),esc(l.note||"—"),money(l.principal),money(loss),money(left)],loss,left}});
+  return tbl(["تاريخ التسجيل","العميل","العقد","المسلَّم","الخسارة","المتبقي"],rows.map(x=>x.cells),
+    ["الإجمالي","","",money(list.reduce((t,[,l])=>t+l.principal,0)),money(rows.reduce((t,x)=>t+x.loss,0)),money(rows.reduce((t,x)=>t+x.left,0))]);
+}
+function stmtBody(list,r,cid){
+  const c=S.customers.get(cid);
+  if(!c)return '<p class="empty">هذا العميل لم يعد موجودًا.</p>';
+  return '<dl class="kv">'+kvRow("العميل",esc(c.name))+kvRow("الجوال",esc(c.phone||"—"))+kvRow("السجل المدني",esc(c.nid||"—"))+'</dl>'+
+    '<h3>العقود</h3>'+conBody(list)+
+    '<h3>المدفوعات في الفترة</h3>'+payBody(list,r);
+}
+function reportHTML(){
+  const f=S.rf,r=rangeOf(f),list=filteredLoans(f),end=r.to==="9999-12-31"?todayISO():r.to;
+  if(f.type==="statement"&&!f.customer)return '<p class="empty">اختر عميلًا من القائمة لإنشاء كشف حسابه.</p>';
+  const head='<div class="print-head"><h2>دفتر الأقساط: '+esc(lab(RTYPES,f.type))+'</h2>'+
+    '<p class="sub">الفترة: '+esc(r.label)+' · العميل: '+esc(f.customer?cname(f.customer):"كل العملاء")+' · الحالة: '+esc(lab(STATUSES,f.status))+' · النوع: '+esc(lab(CTYPES,f.ctype))+'</p>'+
+    '<p class="sub">أُعدّ بتاريخ '+esc(fmtDate(todayISO()))+'</p></div>';
+  let body="";
+  if(f.type==="summary")body=sumBody(list,r,end);
+  else if(f.type==="payments")body=payBody(list,r);
+  else if(f.type==="contracts")body=conBody(list.filter(([,l])=>inR(String(l.createdAt).slice(0,10),r)));
+  else if(f.type==="overdue")body=overBody(list,end);
+  else if(f.type==="written")body=writtenBody(list.filter(([,l])=>inR(l.writtenOff||"",r)));
+  else if(f.type==="statement")body=stmtBody(list,r,f.customer);
+  return head+body;
+}
+function readRF(){
+  const f=S.rf;
+  f.type=$("#rf-type").value;f.customer=$("#rf-customer").value;f.mode=$("#rf-mode").value;
+  f.month=$("#rf-month").value;f.year=Number($("#rf-year").value);f.from=$("#rf-from").value;f.to=$("#rf-to").value;
+  f.status=$("#rf-status").value;f.ctype=$("#rf-ctype").value;
+  $("#rf-f-month").hidden=f.mode!=="month";$("#rf-f-year").hidden=f.mode!=="year";
+  $("#rf-f-from").hidden=f.mode!=="range";$("#rf-f-to").hidden=f.mode!=="range";
+}
+function viewCustom(){
+  const f=S.rf,ys=years();
+  const custOpts='<option value="">كل العملاء</option>'+[...S.customers.entries()].sort((a,b)=>String(a[1].name).localeCompare(String(b[1].name),"ar"))
+    .map(([id,c])=>'<option value="'+esc(id)+'"'+(f.customer===id?' selected':'')+'>'+esc(c.name)+'</option>').join("");
+  const opts=(list,cur)=>list.map(([v,t])=>'<option value="'+v+'"'+(cur===v?' selected':'')+'>'+t+'</option>').join("");
+  return '<div class="card stack no-print">'+
+    '<div class="two"><div class="field"><label for="rf-type">نوع التقرير</label><select id="rf-type">'+opts(RTYPES,f.type)+'</select></div>'+
+    '<div class="field"><label for="rf-customer">العميل</label><select id="rf-customer">'+custOpts+'</select></div></div>'+
+    '<div class="two"><div class="field"><label for="rf-mode">الفترة</label><select id="rf-mode">'+opts(PERIODS,f.mode)+'</select></div>'+
+    '<div class="field" id="rf-f-month"'+(f.mode==="month"?'':' hidden')+'><label for="rf-month">الشهر</label><input type="month" id="rf-month" value="'+esc(f.month)+'"></div>'+
+    '<div class="field" id="rf-f-year"'+(f.mode==="year"?'':' hidden')+'><label for="rf-year">السنة</label><select id="rf-year">'+ys.map(y=>'<option value="'+y+'"'+(f.year===y?' selected':'')+'>'+y+'</option>').join("")+'</select></div>'+
+    '<div class="field" id="rf-f-from"'+(f.mode==="range"?'':' hidden')+'><label for="rf-from">من تاريخ</label><input type="date" id="rf-from" value="'+esc(f.from)+'"></div>'+
+    '<div class="field" id="rf-f-to"'+(f.mode==="range"?'':' hidden')+'><label for="rf-to">إلى تاريخ</label><input type="date" id="rf-to" value="'+esc(f.to)+'"></div></div>'+
+    '<div class="two"><div class="field"><label for="rf-status">حالة العقد</label><select id="rf-status">'+opts(STATUSES,f.status)+'</select></div>'+
+    '<div class="field"><label for="rf-ctype">نوع العقد</label><select id="rf-ctype">'+opts(CTYPES,f.ctype)+'</select></div></div>'+
+    '<p class="note">التقرير يُحسب من البيانات المحمّلة في الصفحة. «المتأخر» و«المتبقي» يُحسبان حتى تاريخ نهاية الفترة، أو حتى اليوم إن لم تحدَّد فترة.</p>'+
+    '<div class="actions"><button type="button" class="btn" data-act="print-report">طباعة التقرير</button></div></div>'+
+    '<div id="rf-out" class="print-area stack">'+reportHTML()+'</div>';
+}
+function viewReports(){
+  const chips='<div class="chips no-print"><button type="button" class="chip" data-act="rtab" data-t="annual" aria-pressed="'+(S.rtab!=="custom")+'">التقرير السنوي</button>'+
+    '<button type="button" class="chip" data-act="rtab" data-t="custom" aria-pressed="'+(S.rtab==="custom")+'">تقرير مخصّص للطباعة</button></div>';
+  return chips+(S.rtab==="custom"?viewCustom():viewAnnual());
+}
+
 function render(){
   const main=$("#main"),ae=document.activeElement,focusQ=ae&&ae.id==="q";
   $(".app").dataset.auth=S.auth;$("#who").textContent=S.auth==="in"?S.name||S.email:"";
@@ -727,6 +894,8 @@ document.addEventListener("click",e=>{
   else if(a==="new-cust")custForm("");
   else if(a==="edit-cust")custForm(S.custId);
   else if(a==="filter"){S.filter=b.dataset.f;render()}
+  else if(a==="rtab"){S.rtab=b.dataset.t;render()}
+  else if(a==="print-report")window.print();
   else if(a==="year"){S.year=Number(b.dataset.y);render()}
   else if(a==="settings"){
     $("#s-rate").value=String(zakatRate());$("#s-err").textContent="";openDlg("#dlg-set");$("#s-rate").focus();
@@ -846,6 +1015,9 @@ $("#f-set").addEventListener("submit",e=>{
 $("#f-confirm").addEventListener("submit",e=>{
   e.preventDefault();const p=pending;pending=null;closeDlgs();
   if(p)act(p.fn,p.msg);
+});
+document.addEventListener("change",e=>{
+  if(e.target.id&&e.target.id.indexOf("rf-")===0&&$("#rf-out")){readRF();$("#rf-out").innerHTML=reportHTML()}
 });
 window.addEventListener("hashchange",()=>{const h=location.hash.slice(1);if(VIEWS.includes(h)&&h!==S.view){S.view=h;S.custId=null;render()}});
 init();
