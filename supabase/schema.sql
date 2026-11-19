@@ -136,3 +136,64 @@ create policy owner_all on public.payments for all to authenticated
   using (owner_id = (select auth.uid())) with check (owner_id = (select auth.uid()));
 create policy owner_all on public.settings for all to authenticated
   using (owner_id = (select auth.uid())) with check (owner_id = (select auth.uid()));
+
+-- تعديل العقد: الأقساط التي فيها سداد لا تتغير، والباقي يُعاد بناؤه
+create function public.update_contract(
+  p_contract_id uuid, p_type text, p_principal numeric, p_total numeric,
+  p_freq text, p_months int, p_start date, p_note text, p_installments jsonb
+) returns void
+language plpgsql security invoker set search_path = '' as $$
+declare
+  v_row record;
+  v_sum numeric;
+  v_count int;
+begin
+  if jsonb_typeof(p_installments) <> 'array' or jsonb_array_length(p_installments) not between 1 and 120 then
+    raise exception 'installments must be 1 to 120 rows' using errcode = '23514';
+  end if;
+  perform 1 from public.contracts where id = p_contract_id for update;
+  if not found then
+    raise exception 'contract not found' using errcode = 'P0002';
+  end if;
+  select sum((e->>'amount')::numeric) into v_sum from jsonb_array_elements(p_installments) e;
+  if v_sum <> p_total then
+    raise exception 'installments must add up to the total' using errcode = '23514';
+  end if;
+  v_count := jsonb_array_length(p_installments);
+  if (select count(distinct (e->>'n')::int) from jsonb_array_elements(p_installments) e) <> v_count
+     or (select min((e->>'n')::int) from jsonb_array_elements(p_installments) e) <> 1
+     or (select max((e->>'n')::int) from jsonb_array_elements(p_installments) e) <> v_count then
+    raise exception 'installment numbers must run from 1 to the count' using errcode = '23514';
+  end if;
+  for v_row in
+    select i.n, i.due_date, i.amount from public.installments i
+    where i.contract_id = p_contract_id
+      and exists (select 1 from public.payments p where p.installment_id = i.id)
+  loop
+    if not exists (
+      select 1 from jsonb_array_elements(p_installments) e
+      where (e->>'n')::int = v_row.n
+        and (e->>'due')::date = v_row.due_date
+        and (e->>'amount')::numeric = v_row.amount
+    ) then
+      raise exception 'installment % has payments and cannot change', v_row.n using errcode = '23514';
+    end if;
+  end loop;
+  delete from public.installments i
+  where i.contract_id = p_contract_id
+    and not exists (select 1 from public.payments p where p.installment_id = i.id);
+  insert into public.installments (contract_id, n, due_date, amount)
+  select p_contract_id, (e->>'n')::int, (e->>'due')::date, (e->>'amount')::numeric
+  from jsonb_array_elements(p_installments) e
+  where not exists (
+    select 1 from public.installments i
+    where i.contract_id = p_contract_id and i.n = (e->>'n')::int
+  );
+  update public.contracts
+     set type = p_type, principal = p_principal, total = p_total, freq = p_freq,
+         months = p_months, start_date = p_start, note = coalesce(p_note, '')
+   where id = p_contract_id;
+end;
+$$;
+revoke all on function public.update_contract(uuid,text,numeric,numeric,text,int,date,text,jsonb) from public, anon;
+grant execute on function public.update_contract(uuid,text,numeric,numeric,text,int,date,text,jsonb) to authenticated;

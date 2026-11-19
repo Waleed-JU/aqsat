@@ -190,6 +190,7 @@ dialog form{padding:20px;display:flex;flex-direction:column;gap:14px}
 <dialog id="dlg-loan" aria-labelledby="dlg-loan-t">
   <form id="f-loan" novalidate>
     <h2 id="dlg-loan-t">عقد جديد</h2>
+    <p class="sub" id="l-edit-note" hidden>الأقساط التي فيها سداد لا تتغير. يُعاد بناء الأقساط غير المسدَّدة فقط.</p>
     <div class="field"><label for="l-type">نوع العقد</label><select id="l-type"><option value="inst">أقساط: يُسدَّد المبلغ على دفعات</option><option value="grace">مهلة: يُسدَّد المبلغ كاملًا عند نهايتها</option></select></div>
     <div class="two">
       <div class="field"><label for="l-principal">المبلغ المسلَّم للعميل (ر.س)</label><input id="l-principal" type="number" min="1" step="0.01" inputmode="decimal"></div>
@@ -486,7 +487,7 @@ function viewCustomer(){
           (st!=="paid"&&st!=="plain"?'<button type="button" class="btn btn--sm" data-act="pay" data-lid="'+esc(lid)+'" data-n="'+it.n+'">سداد</button>':'')+
           (it.paid>0&&!l.closed?'<button type="button" class="btn btn--quiet btn--sm" data-act="undo" data-lid="'+esc(lid)+'" data-n="'+it.n+'">تراجع</button>':'')+'</td></tr>';
       }).join("")+'</tbody></table></div>'+
-      '<div class="row">'+(l.closed?'<button type="button" class="btn btn--quiet btn--sm" data-act="reopen" data-lid="'+esc(lid)+'">إعادة فتح العقد</button>':l.writtenOff?'':'<button type="button" class="btn btn--ghost btn--sm" data-act="end-loan" data-lid="'+esc(lid)+'">إنهاء العقد</button>')+(l.closed?'':l.writtenOff?'<button type="button" class="btn btn--quiet btn--sm" data-act="unwriteoff" data-lid="'+esc(lid)+'">إلغاء تسجيله دينًا معدومًا</button>':m.rem>0?'<button type="button" class="btn btn--quiet btn--sm" data-act="writeoff" data-lid="'+esc(lid)+'">تسجيل كدين معدوم</button>':'')+'<button type="button" class="btn btn--danger btn--sm" data-act="del-loan" data-lid="'+esc(lid)+'">حذف العقد</button></div></div>';
+      '<div class="row"><button type="button" class="btn btn--quiet btn--sm" data-act="edit-loan" data-lid="'+esc(lid)+'">تعديل العقد</button>'+(l.closed?'<button type="button" class="btn btn--quiet btn--sm" data-act="reopen" data-lid="'+esc(lid)+'">إعادة فتح العقد</button>':l.writtenOff?'':'<button type="button" class="btn btn--ghost btn--sm" data-act="end-loan" data-lid="'+esc(lid)+'">إنهاء العقد</button>')+(l.closed?'':l.writtenOff?'<button type="button" class="btn btn--quiet btn--sm" data-act="unwriteoff" data-lid="'+esc(lid)+'">إلغاء تسجيله دينًا معدومًا</button>':m.rem>0?'<button type="button" class="btn btn--quiet btn--sm" data-act="writeoff" data-lid="'+esc(lid)+'">تسجيل كدين معدوم</button>':'')+'<button type="button" class="btn btn--danger btn--sm" data-act="del-loan" data-lid="'+esc(lid)+'">حذف العقد</button></div></div>';
   });
   return h;
 }
@@ -570,6 +571,7 @@ function toast(msg){const t=$("#toast");t.textContent=msg;t.classList.add("on");
 function fail(e){
   console.error(e);
   const c=e&&e.code;
+  if(/has payments/.test(String(e&&e.message)))return toast("لا يمكن تغيير قسط سُدِّد منه. الأقساط غير المسدَّدة فقط تتغير.");
   toast(c==="23514"||c==="P0001"?"لم يُحفظ: القيمة المدخلة غير مقبولة. راجع المبالغ ثم حاول.":c==="42501"?"لا تملك صلاحية هذا الإجراء.":"لم يُحفظ التغيير. تحقق من الاتصال ثم حاول مرة أخرى.");
 }
 async function act(fn,msg){
@@ -666,6 +668,25 @@ function loanMode(){
   $("#l-inst-fields").hidden=g;$("#l-grace-fields").hidden=!g;
   $("#l-start-lbl").textContent=g?"تاريخ بداية المهلة":"تاريخ أول قسط";
 }
+function editSchedule(l,t,n,freq,start,mo,grace){
+  const locked=new Map();
+  (l.installments||[]).forEach(it=>{if((it.pays||[]).length)locked.set(it.n,it)});
+  const count=grace?1:n;
+  for(const k of locked.keys())if(k>count)throw new Error("لا يمكن تقليل عدد الأقساط إلى أقل من رقم قسط سُدِّد منه.");
+  const lockedSum=r2([...locked.values()].reduce((s,it)=>s+it.amt,0));
+  const remaining=r2(t-lockedSum),free=[];
+  for(let i=1;i<=count;i++)if(!locked.has(i))free.push(i);
+  if(free.length&&remaining<=0)throw new Error("المبلغ المتبقي بعد الأقساط المسدَّدة لا يكفي لتوزيعه على الأقساط غير المسدَّدة.");
+  if(!free.length&&remaining!==0)throw new Error("كل الأقساط مسدَّدة، فلا يمكن تغيير الإجمالي.");
+  const cents=Math.round(remaining*100),base=free.length?Math.floor(cents/free.length):0,rest=free.length?cents-base*free.length:0;
+  const out=[];
+  for(let i=1;i<=count;i++){
+    if(locked.has(i)){const it=locked.get(i);out.push({n:i,due:it.due,amount:it.amt});continue}
+    const k=free.indexOf(i);
+    out.push({n:i,due:grace?periodDate(start,mo,"monthly"):periodDate(start,i-1,freq),amount:(base+(k===free.length-1?rest:0))/100});
+  }
+  return out;
+}
 function loanPreview(){
   const g=$("#l-type").value==="grace",p=Number($("#l-principal").value),t=Number($("#l-total").value)||p,start=$("#l-start").value,pv=$("#l-preview");
   const extra=t>p?" الزيادة على المبلغ المسلَّم "+moneyText(t-p)+".":"";
@@ -677,7 +698,9 @@ function loanPreview(){
   }
   const n=parseInt($("#l-count").value,10),freq=$("#l-freq").value;
   if(!(p>0)||!(n>=1)||!start){pv.textContent="أدخل المبلغ وعدد الأقساط لعرض قيمة القسط.";return}
-  const sch=buildSchedule(t,Math.min(n,120),start,freq);
+  const edL=$("#f-loan").dataset.edit?S.loans.get($("#f-loan").dataset.edit):null;
+  let sch;
+  try{sch=edL?editSchedule(edL,t,Math.min(n,120),freq,start,0,false):buildSchedule(t,Math.min(n,120),start,freq)}catch(x){pv.textContent=x.message;return}
   pv.textContent=sch.length+" أقساط "+(freq==="weekly"?"أسبوعية":"شهرية")+"، قيمة القسط "+moneyText(sch[0].amt)+
     (sch[sch.length-1].amt!==sch[0].amt?" والأخير "+moneyText(sch[sch.length-1].amt):"")+"، وآخر قسط في "+fmtDate(sch[sch.length-1].due)+"."+extra;
 }
@@ -708,8 +731,20 @@ document.addEventListener("click",e=>{
   else if(a==="settings"){
     $("#s-rate").value=String(zakatRate());$("#s-err").textContent="";openDlg("#dlg-set");$("#s-rate").focus();
   }
+  else if(a==="edit-loan"){
+    const l=S.loans.get(lid);if(!l)return;
+    const f=$("#f-loan");f.reset();f.dataset.edit=lid;
+    $("#dlg-loan-t").textContent="تعديل العقد";$("#l-edit-note").hidden=false;
+    $("#l-type").value=l.type==="grace"?"grace":"inst";
+    $("#l-principal").value=l.principal;$("#l-total").value=l.total;
+    $("#l-count").value=(l.installments||[]).length;
+    $("#l-freq").value=l.freq==="weekly"?"weekly":"monthly";
+    $("#l-months").value=l.months||3;$("#l-start").value=l.start;$("#l-note").value=l.note||"";
+    $("#l-err").textContent="";loanMode();loanPreview();
+    openDlg("#dlg-loan");$("#l-principal").focus();
+  }
   else if(a==="new-loan"){
-    $("#f-loan").reset();$("#l-count").value=12;$("#l-start").value=periodDate(todayISO(),1,"monthly");$("#l-months").value=3;$("#l-err").textContent="";loanMode();loanPreview();
+    $("#f-loan").reset();$("#f-loan").dataset.edit="";$("#dlg-loan-t").textContent="عقد جديد";$("#l-edit-note").hidden=true;$("#l-count").value=12;$("#l-start").value=periodDate(todayISO(),1,"monthly");$("#l-months").value=3;$("#l-err").textContent="";loanMode();loanPreview();
     openDlg("#dlg-loan");$("#l-principal").focus();
   }
   else if(a==="pay")payForm(lid,Number(b.dataset.n));
@@ -750,7 +785,7 @@ document.addEventListener("click",e=>{
 document.addEventListener("input",e=>{
   if(e.target.id==="q"){S.q=e.target.value;const box=$("#cust-list");if(box)box.innerHTML=custCards()}
   else if(e.target.closest("#f-loan")){
-    if(e.target.id==="l-type"){loanMode();$("#l-start").value=e.target.value==="grace"?todayISO():periodDate(todayISO(),1,"monthly")}
+    if(e.target.id==="l-type"){loanMode();if(!$("#f-loan").dataset.edit)$("#l-start").value=e.target.value==="grace"?todayISO():periodDate(todayISO(),1,"monthly")}
     loanPreview();
   }
 });
@@ -780,9 +815,14 @@ $("#f-loan").addEventListener("submit",e=>{
   if(!start){err.textContent=g?"اختر تاريخ بداية المهلة.":"اختر تاريخ أول قسط.";$("#l-start").focus();return}
   if(!S.custId)return;
   const freq=g?"once":$("#l-freq").value==="weekly"?"weekly":"monthly";
-  const sch=g?[{n:1,due:periodDate(start,mo,"monthly"),amount:t}]:buildSchedule(t,n,start,freq).map(x=>({n:x.n,due:x.due,amount:x.amt}));
-  act(()=>run(sb.rpc("create_contract",{p_customer_id:S.custId,p_type:g?"grace":"inst",p_principal:p,p_total:t,p_freq:freq,p_months:g?mo:null,p_start:start,p_note:$("#l-note").value.trim(),p_installments:sch})),
-    g?"أُنشئ عقد المهلة.":"أُنشئ العقد وجدول أقساطه.");
+  const editId=e.target.dataset.edit,editL=editId?S.loans.get(editId):null;
+  let sch;
+  try{
+    sch=editL?editSchedule(editL,t,n,freq,start,mo,g):g?[{n:1,due:periodDate(start,mo,"monthly"),amount:t}]:buildSchedule(t,n,start,freq).map(x=>({n:x.n,due:x.due,amount:x.amt}));
+  }catch(x){err.textContent=x.message;return}
+  const common={p_type:g?"grace":"inst",p_principal:p,p_total:t,p_freq:freq,p_months:g?mo:null,p_start:start,p_note:$("#l-note").value.trim(),p_installments:sch};
+  if(editL)act(()=>run(sb.rpc("update_contract",{p_contract_id:editId,...common})),"حُفظ تعديل العقد.");
+  else act(()=>run(sb.rpc("create_contract",{p_customer_id:S.custId,...common})),g?"أُنشئ عقد المهلة.":"أُنشئ العقد وجدول أقساطه.");
 });
 $("#f-pay").addEventListener("submit",e=>{
   e.preventDefault();
